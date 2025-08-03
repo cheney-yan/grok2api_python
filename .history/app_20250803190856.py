@@ -218,8 +218,6 @@ class AuthTokenManager:
     def add_token(self, tokens, isinitialization=False):
         tokenType = tokens.get("type")
         tokenSso = tokens.get("token")
-        if "sso=" not in tokenSso:
-            return (False, "Invalid SSO token format")
         if tokenType == "normal":
             self.model_config = self.model_normal_config
         else:
@@ -257,8 +255,6 @@ class AuthTokenManager:
     def set_token(self, tokens):
         tokenType = tokens.get("type")
         tokenSso = tokens.get("token")
-        if "sso=" not in tokenSso:
-            return (False, "Invalid SSO token format")
         if tokenType == "normal":
             self.model_config = self.model_normal_config
         else:
@@ -1160,7 +1156,6 @@ def manager_login():
         return redirect('/')
 
 def check_auth():
-    logger.info(f"SSO Session Check: {session}")
     return session.get('is_logged_in', False)
 
 @app.route('/manager')
@@ -1288,8 +1283,6 @@ def get_models():
 def chat_completions():
     response_status_code = 500
     try:
-        logger.info(f"Received Authorization header: {request.headers.get('Authorization')}")
-        logger.info(f"Expected API Key: {CONFIG['API']['API_KEY']}")
         auth_token = request.headers.get('Authorization',
                                          '').replace('Bearer ', '')
         if auth_token:
