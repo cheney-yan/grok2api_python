@@ -1377,20 +1377,19 @@ def chat_completions():
                         content = handle_non_stream_response(response, model)
                         return jsonify(MessageProcessor.create_chat_response(content, model))
 
-                # 任何非200状态码都标记token为无效（悲观策略）
-                logger.warning(f"令牌请求失败，状态码: {response.status_code}，标记token为无效", "Server")
+                logger.warning(f"令牌请求失败，状态码: {response.status_code}", "Server")
                 if CONFIG["API"]["IS_CUSTOM_SSO"]:
                     raise ValueError(f"自定义SSO令牌当前模型{model}的请求次数已失效")
 
-                token_manager.mark_token_invalid(model, current_token, f"HTTP {response.status_code}")
+                token_manager.remove_token_from_model(model, current_token)
                 continue
 
             except Exception as e:
-                logger.error(f"请求处理时发生异常: {str(e)}，标记token为无效", "Server")
+                logger.error(f"请求处理时发生异常: {str(e)}", "Server")
                 if CONFIG["API"]["IS_CUSTOM_SSO"]:
                     raise
                 
-                token_manager.mark_token_invalid(model, current_token, f"异常: {str(e)}")
+                token_manager.remove_token_from_model(model, current_token)
                 continue
 
         # After the loop, if no token was successful

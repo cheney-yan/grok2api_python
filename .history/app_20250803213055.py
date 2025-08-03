@@ -333,35 +333,8 @@ class AuthTokenManager:
         if normalized_model not in self.token_model_map or not self.token_model_map[normalized_model]:
             return None
 
-        # 查找第一个有效的token
-        while self.token_model_map[normalized_model]:
-            token_entry = self.token_model_map[normalized_model][0]
-            sso = token_entry["token"].split("sso=")[1].split(";")[0]
-            
-            # 检查token状态是否有效
-            if (sso in self.token_status_map and
-                normalized_model in self.token_status_map[sso] and
-                not self.token_status_map[sso][normalized_model]["isValid"]):
-                logger.info(f"Token状态无效，跳过: {token_entry['token'][:50]}...", "TokenManager")
-                self.token_model_map[normalized_model].pop(0)  # 移除无效token
-                continue
-            
-            # 检查token是否已经超过限制
-            if token_entry["RequestCount"] >= token_entry["MaxRequestCount"]:
-                logger.info(f"Token已达到使用上限 ({token_entry['RequestCount']}/{token_entry['MaxRequestCount']})，移除", "TokenManager")
-                self.mark_token_invalid(normalized_model, token_entry["token"], "达到使用上限")
-                self.token_model_map[normalized_model].pop(0)
-                continue
-            
-            # 找到有效token
-            break
-        
-        if not self.token_model_map[normalized_model]:
-            return None
-            
         token_entry = self.token_model_map[normalized_model][0]
-        logger.info(f"使用token: {token_entry['token'][:50]}... (使用次数: {token_entry['RequestCount']}/{token_entry['MaxRequestCount']})", "TokenManager")
-        
+        logger.info(f"token_entry: {token_entry}", "TokenManager")
         if is_return:
             return token_entry["token"]
 
@@ -370,7 +343,6 @@ class AuthTokenManager:
                 self.model_config = self.model_super_config
             else:
                 self.model_config = self.model_normal_config
-            
             if token_entry["StartCallTime"] is None:
                 token_entry["StartCallTime"] = int(time.time() * 1000)
 
@@ -380,37 +352,26 @@ class AuthTokenManager:
 
             token_entry["RequestCount"] += 1
 
+            if token_entry["RequestCount"] > token_entry["MaxRequestCount"]:
+                self.remove_token_from_model(normalized_model, token_entry["token"])
+                next_token_entry = self.token_model_map[normalized_model][0] if self.token_model_map[normalized_model] else None
+                return next_token_entry["token"] if next_token_entry else None
+
             sso = token_entry["token"].split("sso=")[1].split(";")[0]
 
             if sso in self.token_status_map and normalized_model in self.token_status_map[sso]:
-                self.token_status_map[sso][normalized_model]["totalRequestCount"] += 1
-                
-                # 如果达到使用上限，标记为无效
-                if token_entry["RequestCount"] >= self.model_config[normalized_model]["RequestFrequency"]:
+                if token_entry["RequestCount"] == self.model_config[normalized_model]["RequestFrequency"]:
                     self.token_status_map[sso][normalized_model]["isValid"] = False
                     self.token_status_map[sso][normalized_model]["invalidatedTime"] = int(time.time() * 1000)
+                self.token_status_map[sso][normalized_model]["totalRequestCount"] += 1
+
+                
 
                 self.save_token_status()
 
             return token_entry["token"]
 
         return None
-
-    def mark_token_invalid(self, model_id, token, reason="请求失败"):
-        """标记token为无效状态"""
-        normalized_model = self.normalize_model_name(model_id)
-        
-        try:
-            sso = token.split("sso=")[1].split(";")[0]
-            if sso in self.token_status_map and normalized_model in self.token_status_map[sso]:
-                self.token_status_map[sso][normalized_model]["isValid"] = False
-                self.token_status_map[sso][normalized_model]["invalidatedTime"] = int(time.time() * 1000)
-                self.save_token_status()
-                logger.info(f"Token已标记为无效 - 原因: {reason}, Token: {token[:50]}...", "TokenManager")
-                return True
-        except Exception as e:
-            logger.error(f"标记token无效时出错: {str(e)}", "TokenManager")
-        return False
 
     def remove_token_from_model(self, model_id, token):
         normalized_model = self.normalize_model_name(model_id)
@@ -424,9 +385,6 @@ class AuthTokenManager:
 
         if token_index != -1:
             removed_token_entry = model_tokens.pop(token_index)
-            
-            # 标记为无效并添加到过期列表
-            self.mark_token_invalid(normalized_model, token, "手动移除")
             self.expired_tokens.add((
                 removed_token_entry["token"],
                 normalized_model,
@@ -438,10 +396,10 @@ class AuthTokenManager:
                 self.start_token_reset_process()
                 self.token_reset_switch = True
 
-            logger.info(f"模型{model_id}的令牌已失效，已成功移除令牌: {token[:50]}...", "TokenManager")
+            logger.info(f"模型{model_id}的令牌已失效，已成功移除令牌: {token}", "TokenManager")
             return True
 
-        logger.error(f"在模型 {normalized_model} 中未找到 token: {token[:50]}...", "TokenManager")
+        logger.error(f"在模型 {normalized_model} 中未找到 token: {token}", "TokenManager")
         return False
 
     def get_expired_tokens(self):
@@ -1092,8 +1050,8 @@ def handle_non_stream_response(response, model):
             except json.JSONDecodeError:
                 continue
             except Exception as e:
-                logger.error(f"处理非流式响应行时出错: {str(e)}", "Server")
-                raise e
+                logger.error(f"处理流式响应行时出错: {str(e)}", "Server")
+                continue
 
         return full_response
     except Exception as error:
@@ -1140,7 +1098,7 @@ def handle_stream_response(response, model):
                 continue
             except Exception as e:
                 logger.error(f"处理流式响应行时出错: {str(e)}", "Server")
-                raise e
+                continue
 
         yield "data: [DONE]\n\n"
     return generate()
@@ -1377,20 +1335,19 @@ def chat_completions():
                         content = handle_non_stream_response(response, model)
                         return jsonify(MessageProcessor.create_chat_response(content, model))
 
-                # 任何非200状态码都标记token为无效（悲观策略）
-                logger.warning(f"令牌请求失败，状态码: {response.status_code}，标记token为无效", "Server")
+                logger.warning(f"令牌请求失败，状态码: {response.status_code}", "Server")
                 if CONFIG["API"]["IS_CUSTOM_SSO"]:
                     raise ValueError(f"自定义SSO令牌当前模型{model}的请求次数已失效")
 
-                token_manager.mark_token_invalid(model, current_token, f"HTTP {response.status_code}")
+                token_manager.remove_token_from_model(model, current_token)
                 continue
 
             except Exception as e:
-                logger.error(f"请求处理时发生异常: {str(e)}，标记token为无效", "Server")
+                logger.error(f"请求处理时发生异常: {str(e)}", "Server")
                 if CONFIG["API"]["IS_CUSTOM_SSO"]:
                     raise
                 
-                token_manager.mark_token_invalid(model, current_token, f"异常: {str(e)}")
+                token_manager.remove_token_from_model(model, current_token)
                 continue
 
         # After the loop, if no token was successful
